@@ -97,7 +97,8 @@ def group_mqtt_data(flat_data: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         "system": {}
     }
     
-    timestamp_iso = datetime.datetime.now().isoformat()
+    # Use timezone-aware timestamp for Home Assistant compatibility
+    timestamp_iso = datetime.datetime.now().astimezone().isoformat()
     
     # Mapping definitions
     sensor_groups = [
