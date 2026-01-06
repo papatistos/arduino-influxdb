@@ -99,14 +99,18 @@ def group_mqtt_data(flat_data: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     }
     expected_suffixes = ["temp", "hum", "ah", "dew"]
     
+    measurement = flat_data.get("measurement")
     groups = {
-        "stats": {k: None for k in ["h-eff", "t-eff", "hum-gain"]},
         "system": {}
     }
     
-    # Initialize sensor groups with None values
-    for group_key, prefix in expected_prefixes.items():
-        groups[group_key] = {f"{prefix}_{s}": None for s in expected_suffixes}
+    # Only initialize sensor/stats groups if this is a data packet (FTX)
+    # This prevents status packets (FTX_log) from overwriting sensors with nulls
+    if measurement == "FTX":
+        groups["stats"] = {k: None for k in ["h-eff", "t-eff", "hum-gain"]}
+        # Initialize sensor groups with None values
+        for group_key, prefix in expected_prefixes.items():
+            groups[group_key] = {f"{prefix}_{s}": None for s in expected_suffixes}
 
     
     # Use timezone-aware timestamp for Home Assistant compatibility
