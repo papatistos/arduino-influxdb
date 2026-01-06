@@ -38,6 +38,60 @@ class InfluxdbError(IOError):
 # pylint: disable=C0330
 
 
+class InfluxdbClient:
+    """Manages a persistent connection to InfluxDB."""
+
+    def __init__(self, host: str, database: str):
+        self.host = host
+        self.database = database
+        self._conn: Optional[http.client.HTTPConnection] = None
+
+    def post_lines(self,
+                   lines: Sequence[bytes],
+                   warn_on_status: FrozenSet[int] = frozenset()) -> None:
+        """Sends a list of lines to InfluxDB."""
+        logging.debug("Sending lines: %s", lines)
+        params = urllib.parse.urlencode([('db', self.database),
+                                         ('precision', 'ns')])
+        if self._conn is None:
+            self._conn = http.client.HTTPConnection(self.host)
+
+        body: bytes = b'\n'.join(lines) + b'\n'
+        try:
+            self._conn.request("POST", "/write?" + params, body=body, headers={})
+            response: http.client.HTTPResponse = self._conn.getresponse()
+        except (http.client.HTTPException, OSError):
+            if self._conn:
+                self._conn.close()
+            self._conn = None
+            raise
+
+        status: int = int(response.status)
+        if status // 100 != 2:
+            error = InfluxdbError(params, body, response)
+            # Ensure the response is fully drained so the connection can be reused.
+            response.read()
+            if status in warn_on_status:
+                logging.warning(error)
+            else:
+                raise error
+        else:
+            # Drain the response body to make the connection ready for the next request.
+            response.read()
+
+    def close(self):
+        """Closes the HTTP connection."""
+        if self._conn:
+            self._conn.close()
+            self._conn = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+
 def PostLines(
     database: str,
     host: str,
@@ -55,19 +109,9 @@ def PostLines(
         IOError when connection to the database fails.
         InfluxdbError if the database returns an error status.
     """
-    logging.debug("Sending lines: %s", lines)
-    params = urllib.parse.urlencode([('db', database), ('precision', 'ns')])
-    conn = http.client.HTTPConnection(host)
-    body: bytes = b'\n'.join(lines) + b'\n'
-    conn.request("POST", "/write?" + params, body=body, headers={})
-    response: http.client.HTTPResponse = conn.getresponse()
-    status: int = int(response.status)
-    if status // 100 != 2:
-        error = InfluxdbError(params, body, response)
-        if status in warn_on_status:
-            logging.warning(error)
-        else:
-            raise error
+    with InfluxdbClient(host, database) as client:
+        client.post_lines(lines, warn_on_status)
+
 
 
 def _Escape(special_characters: str) -> Dict[int, str]:

@@ -258,36 +258,35 @@ def WriteLoop(args, queue: persistent_queue.Queue):
             mqtt_client = None
 
     try:
-        influxdb_line: str
-        count = 0
-        for influxdb_line in queue.get_blocking(tick=60):
-            # Send to InfluxDB
-            influxdb.PostLines(args.database,
-                               args.host,
-                               [influxdb_line.encode(encoding='UTF-8')],
-                               warn_on_status=warn_on_status)
-            
-            # Send to MQTT (best effort)
-            if mqtt_client:
-                try:
-                    flat_data = parse_influx_line_to_dict(influxdb_line)
-                    if flat_data:
-                        grouped_data = group_mqtt_data(flat_data)
-                        for subtopic, payload in grouped_data.items():
-                            full_topic = f"{args.mqtt_topic}/{subtopic}"
-                            # Trim trailing slash if base topic is empty or ends with slash? 
-                            # Usually args.mqtt_topic is 'arduino/data', so 'arduino/data/outside'
-                            full_topic = full_topic.replace("//", "/")
-                            mqtt_client.publish(full_topic, json.dumps(payload))
-                except Exception as e:
-                    logging.warning(f"Failed to publish to MQTT: {e}")
+        with influxdb.InfluxdbClient(args.host, args.database) as influx_client:
+            influxdb_line: str
+            count = 0
+            for influxdb_line in queue.get_blocking(tick=60):
+                # Send to InfluxDB
+                influx_client.post_lines([influxdb_line.encode(encoding='UTF-8')],
+                                         warn_on_status=warn_on_status)
+                
+                # Send to MQTT (best effort)
+                if mqtt_client:
+                    try:
+                        flat_data = parse_influx_line_to_dict(influxdb_line)
+                        if flat_data:
+                            grouped_data = group_mqtt_data(flat_data)
+                            for subtopic, payload in grouped_data.items():
+                                full_topic = f"{args.mqtt_topic}/{subtopic}"
+                                # Trim trailing slash if base topic is empty or ends with slash? 
+                                # Usually args.mqtt_topic is 'arduino/data', so 'arduino/data/outside'
+                                full_topic = full_topic.replace("//", "/")
+                                mqtt_client.publish(full_topic, json.dumps(payload))
+                    except Exception as e:
+                        logging.warning(f"Failed to publish to MQTT: {e}")
 
-            count += 1
-            if count % 1000 == 0:
-                try:
-                    queue.garbage_collect()
-                except Exception as e:
-                    logging.warning(f"Garbage collection failed: {e}")
+                count += 1
+                if count % 1000 == 0:
+                    try:
+                        queue.garbage_collect()
+                    except Exception as e:
+                        logging.warning(f"Garbage collection failed: {e}")
 
     except:
         logging.exception("Error, retrying with backoff")
