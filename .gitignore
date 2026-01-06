@@ -124,3 +124,4 @@ dmypy.json
 
 # Vim
 *.sw[op]
+config.json

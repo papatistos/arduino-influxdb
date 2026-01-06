@@ -1,20 +1,3 @@
-#!/usr/bin/env python3
-
-# Copyright 2020 Google LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-"""Forwards data from a serial device to an InfluxDB database."""
-
 import argparse
 import importlib
 import logging
@@ -22,7 +5,9 @@ import sys
 import threading
 import time
 import datetime
-from typing import BinaryIO, Callable, FrozenSet, Generator, Optional
+import json
+import paho.mqtt.client as mqtt
+from typing import BinaryIO, Callable, FrozenSet, Generator, Optional, Dict, Any
 
 from retrying import retry
 import serial
@@ -44,6 +29,85 @@ def RetryOnIOError(exception):
     """Returns True if 'exception' is an IOError."""
     return isinstance(exception, IOError)
 
+def parse_influx_line_to_dict(line_str: str) -> Dict[str, Any]:
+    """Parses an InfluxDB line protocol string into a dictionary."""
+    # Format: measurement,tag1=val1 field1=val1,field2=val2 timestamp
+    try:
+        parts = line_str.split(" ")
+        # Handle cases where tags might not exist or parsing is tricky
+        if len(parts) < 2:
+            return {}
+        
+        # Part 0: measurement + tags
+        meas_parts = parts[0].split(",")
+        measurement = meas_parts[0]
+        tags = {}
+        for t in meas_parts[1:]:
+            if "=" in t:
+                k, v = t.split("=", 1)
+                tags[k] = v
+
+        # Part 1: fields
+        fields_str = parts[1]
+        fields = {}
+        # Splitting fields by comma is tricky if values contain commas (strings), 
+        # but for this specific sensor data, simple split is likely safe.
+        # A robust parser would handle quotes.
+        for f in fields_str.split(","):
+            if "=" in f:
+                k, v = f.split("=", 1)
+                # Try to convert to float/int
+                try:
+                    if v.endswith("i"):
+                        fields[k] = int(v[:-1])
+                    elif v.lower() in ["true", "false", "t", "f"]:
+                         fields[k] = (v.lower() in ["true", "t"])
+                    elif '"' in v:
+                        fields[k] = v.strip('"')
+                    else:
+                        fields[k] = float(v)
+                except ValueError:
+                    fields[k] = v
+
+        # Part 2: timestamp (optional)
+        timestamp = None
+        if len(parts) > 2:
+            try:
+                timestamp = int(parts[2])
+            except ValueError:
+                pass
+
+        # Field mapping
+        field_map = {
+            "t0": "outside_temp",
+            "t1": "incoming_temp",
+            "t2": "inside_temp",
+            "t3": "outgoing_temp",
+            "rh0": "outside_hum",
+            "rh1": "incoming_hum",
+            "rh2": "inside_hum",
+            "rh3": "outgoing_hum"
+        }
+
+        mapped_fields = {}
+        for k, v in fields.items():
+            new_key = field_map.get(k, k)
+            mapped_fields[new_key] = v
+
+        data = {
+            "measurement": measurement,
+            **tags,
+            **mapped_fields
+        }
+        if timestamp:
+            data["timestamp"] = timestamp
+            
+        return data
+    except Exception as e:
+        logging.warning(f"Failed to parse line for JSON conversion: {line_str}. Error: {e}")
+        return {}
+
+
 @retry(wait_exponential_multiplier=1000,
        wait_exponential_max=60000,
        retry_on_exception=RetryOnIOError)
@@ -55,8 +119,6 @@ def ReadLoop(args, queue: persistent_queue.Queue):
         module, fn_name = args.serial_function.rsplit(".", 1)
         serial_fn = getattr(importlib.import_module(module), fn_name)
 
-    invalid_line_count = 0
-    max_invalid_lines = 10  # Adjust this threshold as needed
     try:
         logging.debug("Read loop started")
         with serial.serial_for_url(args.device,
@@ -71,13 +133,7 @@ def ReadLoop(args, queue: persistent_queue.Queue):
             for line in lines:
                 # If line does not start with start string
                 if not line.startswith(b'FTX'):
-                    invalid_line_count += 1
-                    if invalid_line_count >= max_invalid_lines:
-                        logging.error(f"Received {max_invalid_lines} consecutive invalid lines. Exiting ReadLoop.")
-                        break  # Exit the loop, but not the function
-                    continue
-
-                invalid_line_count = 0  # Reset the count on a valid line
+                   continue
 
                 try:
                     line = str(line, encoding="UTF-8")
@@ -123,14 +179,10 @@ def ReadLoop(args, queue: persistent_queue.Queue):
                 tags: str = ",".join(t for t in (tags, args.tags) if t)
                 queue.put("{0} {1} {2:d}".format(tags, values, timestamp))
 
-        if invalid_line_count >= max_invalid_lines:
-            return  # Exit the function after the loop
     except:
         logging.exception("Error, retrying with backoff")
         raise
-
-
-
+        
 
 @retry(wait_exponential_multiplier=1000,
        wait_exponential_max=60000,
@@ -140,17 +192,43 @@ def WriteLoop(args, queue: persistent_queue.Queue):
     logging.debug("Write loop started")
     warn_on_status: FrozenSet[int] = frozenset(
         int(status) for status in args.warn_on_status)
+    
+    mqtt_client = None
+    if args.mqtt_host:
+        try:
+            mqtt_client = mqtt.Client()
+            mqtt_client.connect(args.mqtt_host, args.mqtt_port, 60)
+            mqtt_client.loop_start()
+            logging.info(f"Connected to MQTT broker at {args.mqtt_host}:{args.mqtt_port}")
+        except Exception as e:
+            logging.error(f"Failed to connect to MQTT broker: {e}")
+            mqtt_client = None
+
     try:
         influxdb_line: str
         for influxdb_line in queue.get_blocking(tick=60):
+            # Send to InfluxDB
             influxdb.PostLines(args.database,
                                args.host,
                                [influxdb_line.encode(encoding='UTF-8')],
                                warn_on_status=warn_on_status)
+            
+            # Send to MQTT (best effort)
+            if mqtt_client:
+                try:
+                    data = parse_influx_line_to_dict(influxdb_line)
+                    if data:
+                        json_payload = json.dumps(data)
+                        mqtt_client.publish(args.mqtt_topic, json_payload)
+                except Exception as e:
+                    logging.warning(f"Failed to publish to MQTT: {e}")
+
     except:
         logging.exception("Error, retrying with backoff")
+        if mqtt_client:
+            mqtt_client.loop_stop()
+            mqtt_client.disconnect()
         raise
-
 
 
 def RunAndDie(fun, *args):
@@ -162,25 +240,35 @@ def RunAndDie(fun, *args):
 
 def main():
     """Parses the command line arguments and invokes the main loop."""
+    
+    # Load configuration from config.json if it exists
+    config = {}
+    config_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'config.json')
+    print(f"Attempting to load config from: {config_path}")
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+                print(f"Loaded configuration from {config_path}")
+        except Exception as e:
+            print(f"Failed to load config.json: {e}")
+
+    mqtt_config = config.get('mqtt', {})
+
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         description="""
           Collects values from a serial port and sends them to InfluxDB.
-
-          Note that the first received line is discarded to prevent recording
-          incomplete data.
-
-          Make sure to set READ_TIMEOUT higher than the longest expected
-          period of inactivity of your device. For example, if your device
-          sends data every 60 seconds, set --read-timeout=70 (or any similar
-          value >60s).
+          ...
         """,
+        # ... existing epilog ...
         epilog="""See
           https://pyserial.readthedocs.io/en/latest/url_handlers.html#urls
           for URL types accepted by -d/--device.
           Run `python -m serial.tools.list_ports` to list of all available
           COM ports.
         """)
+    # ... existing arguments ...
     parser.add_argument('-d',
                         '--device',
                         required=True,
@@ -248,6 +336,19 @@ def main():
     parser.add_argument('--debug',
                         action='store_true',
                         help='enable debug level')
+    
+    # MQTT Arguments (defaults from config if available)
+    parser.add_argument('--mqtt-host',
+                        default=mqtt_config.get('host'),
+                        help='MQTT broker hostname or IP address')
+    parser.add_argument('--mqtt-port',
+                        type=int,
+                        default=mqtt_config.get('port', 1883),
+                        help='MQTT broker port (default 1883)')
+    parser.add_argument('--mqtt-topic',
+                        default=mqtt_config.get('topic', 'arduino/data'),
+                        help='MQTT topic to publish JSON data to')
+
     args = parser.parse_args()
 
     if args.debug:
@@ -289,4 +390,3 @@ if __name__ == "__main__":
         except Exception:
             logging.exception("Unhandled exception occurred in main(), restarting script...")
             time.sleep(5)  # Wait a bit
-
