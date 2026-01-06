@@ -30,11 +30,10 @@ def RetryOnIOError(exception):
     return isinstance(exception, IOError)
 
 def parse_influx_line_to_dict(line_str: str) -> Dict[str, Any]:
-    """Parses an InfluxDB line protocol string into a dictionary."""
+    """Parses an InfluxDB line protocol string into a flat dictionary."""
     # Format: measurement,tag1=val1 field1=val1,field2=val2 timestamp
     try:
         parts = line_str.split(" ")
-        # Handle cases where tags might not exist or parsing is tricky
         if len(parts) < 2:
             return {}
         
@@ -50,13 +49,9 @@ def parse_influx_line_to_dict(line_str: str) -> Dict[str, Any]:
         # Part 1: fields
         fields_str = parts[1]
         fields = {}
-        # Splitting fields by comma is tricky if values contain commas (strings), 
-        # but for this specific sensor data, simple split is likely safe.
-        # A robust parser would handle quotes.
         for f in fields_str.split(","):
             if "=" in f:
                 k, v = f.split("=", 1)
-                # Try to convert to float/int
                 try:
                     if v.endswith("i"):
                         fields[k] = int(v[:-1])
@@ -77,27 +72,10 @@ def parse_influx_line_to_dict(line_str: str) -> Dict[str, Any]:
             except ValueError:
                 pass
 
-        # Field mapping
-        field_map = {
-            "t0": "outside_temp",
-            "t1": "incoming_temp",
-            "t2": "inside_temp",
-            "t3": "outgoing_temp",
-            "rh0": "outside_hum",
-            "rh1": "incoming_hum",
-            "rh2": "inside_hum",
-            "rh3": "outgoing_hum"
-        }
-
-        mapped_fields = {}
-        for k, v in fields.items():
-            new_key = field_map.get(k, k)
-            mapped_fields[new_key] = v
-
         data = {
             "measurement": measurement,
             **tags,
-            **mapped_fields
+            **fields
         }
         if timestamp:
             data["timestamp"] = timestamp
@@ -106,6 +84,74 @@ def parse_influx_line_to_dict(line_str: str) -> Dict[str, Any]:
     except Exception as e:
         logging.warning(f"Failed to parse line for JSON conversion: {line_str}. Error: {e}")
         return {}
+
+def group_mqtt_data(flat_data: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """Groups flat data into sub-topics with renamed fields."""
+    groups = {
+        "outside": {},
+        "incoming": {},
+        "inside": {},
+        "outgoing": {},
+        "stats": {},
+        "system": {}
+    }
+    
+    timestamp_iso = datetime.datetime.now().isoformat()
+    
+    # Mapping definitions
+    sensor_groups = [
+        ("0", "outside"),
+        ("1", "incoming"),
+        ("2", "inside"),
+        ("3", "outgoing")
+    ]
+    
+    prefix_map = {
+        "t": "temp",
+        "rh": "hum",
+        "ah": "ah",
+        "dew": "dew"
+    }
+
+    stats_keys = ["h-eff", "t-eff", "hum-gain"]
+
+    for k, v in flat_data.items():
+        if k in ["measurement", "timestamp"]:
+            # Add measurement to system
+            if k == "measurement":
+                groups["system"]["measurement"] = v
+            continue
+
+        matched = False
+        
+        # Check sensor groups
+        for suffix, group in sensor_groups:
+            if k.endswith(suffix):
+                prefix = k[:-1]
+                if prefix in prefix_map:
+                    new_key = f"{group}_{prefix_map[prefix]}"
+                    groups[group][new_key] = v
+                    matched = True
+                    break
+        if matched:
+            continue
+
+        # Check stats
+        if k in stats_keys or k.startswith("CR"):
+            groups["stats"][k] = v
+            continue
+            
+        # Default to system
+        groups["system"][k] = v
+
+    # Add timestamp to all groups that have data
+    final_groups = {}
+    for g_name, g_data in groups.items():
+        if g_data:
+            g_data["last_updated"] = timestamp_iso
+            final_groups[g_name] = g_data
+            
+    return final_groups
 
 
 @retry(wait_exponential_multiplier=1000,
@@ -216,10 +262,15 @@ def WriteLoop(args, queue: persistent_queue.Queue):
             # Send to MQTT (best effort)
             if mqtt_client:
                 try:
-                    data = parse_influx_line_to_dict(influxdb_line)
-                    if data:
-                        json_payload = json.dumps(data)
-                        mqtt_client.publish(args.mqtt_topic, json_payload)
+                    flat_data = parse_influx_line_to_dict(influxdb_line)
+                    if flat_data:
+                        grouped_data = group_mqtt_data(flat_data)
+                        for subtopic, payload in grouped_data.items():
+                            full_topic = f"{args.mqtt_topic}/{subtopic}"
+                            # Trim trailing slash if base topic is empty or ends with slash? 
+                            # Usually args.mqtt_topic is 'arduino/data', so 'arduino/data/outside'
+                            full_topic = full_topic.replace("//", "/")
+                            mqtt_client.publish(full_topic, json.dumps(payload))
                 except Exception as e:
                     logging.warning(f"Failed to publish to MQTT: {e}")
 
