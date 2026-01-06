@@ -234,7 +234,7 @@ def ReadLoop(args, queue: persistent_queue.Queue):
                         line_str = line.strip()
                     except:
                         line_str = str(line)
-                    logging.getLogger('data_errors').warning(f"Removed nan values for fields {removed_fields} from line: {line_str}")
+                    logging.getLogger('data_errors').warning(f"Removed invalid values for fields {removed_fields} from line: {line_str}")
 
                 if not valid_values:
                     logging.warning("Skipping line because all values are nan: %r", line)
