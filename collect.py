@@ -21,6 +21,7 @@ import logging
 import sys
 import threading
 import time
+import datetime
 from typing import BinaryIO, Callable, FrozenSet, Generator, Optional
 
 from retrying import retry
@@ -96,12 +97,23 @@ def ReadLoop(args, queue: persistent_queue.Queue):
                 # Filter out values that are 'nan' as InfluxDB does not support them.
                 value_parts = values.split(',')
                 valid_values = []
+                removed_fields = []
                 for part in value_parts:
                     if '=' in part:
-                        _, val = part.split('=', 1)
+                        key, val = part.split('=', 1)
                         if val.lower() == 'nan':
+                            removed_fields.append(key)
                             continue
                     valid_values.append(part)
+
+                if removed_fields:
+                    timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    try:
+                        line_str = line.strip()
+                    except:
+                        line_str = str(line)
+                    with open("error.log", "a") as err_file:
+                        err_file.write(f"[{timestamp_str}] Removed nan values for fields {removed_fields} from line: {line_str}\n")
 
                 if not valid_values:
                     logging.warning("Skipping line because all values are nan: %r", line)
