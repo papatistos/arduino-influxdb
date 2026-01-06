@@ -72,6 +72,20 @@ To enable MQTT, use the following arguments:
 - `--mqtt-port`: Port (default 1883).
 - `--mqtt-topic`: Base topic (default `arduino/data`).
 
+Alternatively, you can provide a `config.json` file in the script's directory:
+
+```json
+{
+    "mqtt": {
+        "host": "192.168.1.10",
+        "port": 1883,
+        "topic": "home/sensors"
+    }
+}
+```
+
+CLI arguments override settings in `config.json`.
+
 Data is automatically grouped into sub-topics based on sensor suffixes (e.g., `.../outside`, `.../inside`).
 
 ## Contributions and future plans
