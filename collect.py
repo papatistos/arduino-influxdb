@@ -213,9 +213,20 @@ def ReadLoop(args, queue: persistent_queue.Queue):
                 for part in value_parts:
                     if '=' in part:
                         key, val = part.split('=', 1)
+                        # Remove nan values
                         if val.lower() == 'nan':
                             removed_fields.append(key)
                             continue
+                        
+                        # Remove zero humidity values (sensor error)
+                        if key.startswith('rh'):
+                            try:
+                                if float(val) == 0:
+                                    removed_fields.append(key)
+                                    continue
+                            except ValueError:
+                                pass
+
                     valid_values.append(part)
 
                 if removed_fields:
