@@ -1,3 +1,0 @@
-[submodule "persistent_queue"]
-	path = persistent_queue
-	url = https://github.com/ppetr/persistent-queue-log.git
