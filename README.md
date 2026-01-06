@@ -31,6 +31,12 @@ For detailed information about command line arguments run
 
     python3 collect.py --help
 
+    python3 collect.py -q /tmp/queue.db ...
+
+The queue ensures that no datapoints are ever lost, even if the database is
+temporarily unreachable. It automatically performs garbage collection of 
+acknowledged messages to prevent unbounded growth.
+
 ### Running with Telegraf
 
 If the Influx database runs on a different machine, it might be helpful to run
@@ -65,5 +71,4 @@ and [Contributing](docs/contributing.md). Currently I'd like to add:
 
 - [Pytype](https://github.com/google/pytype) annotations.
 - Thorough, proper testing.
-- [systemd](https://en.wikipedia.org/wiki/Systemd) daemon configuration example.
 - Packaging for Debian/Ubuntu.
