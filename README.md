@@ -55,14 +55,13 @@ passed to it by `collect.py` (or any other script).
 - Python libraries:
   - [retrying](https://pypi.python.org/pypi/retrying)
   - [pyserial](https://pypi.python.org/pypi/pyserial)
-  - [persistent-queue-log](https://github.com/ppetr/persistent-queue-log) -
-    included as a
-    [submodule](https://git-scm.com/book/en/v2/Git-Tools-Submodules); just
-    clone this repository with `--recurse-submodules`.
+  - [apsw](https://rogerbinns.github.io/apsw/) (for the persistent queue)
 
-On Debian the first two can be installed using
+On Debian these can be installed using
 
-    sudo apt-get install python3-retrying python3-serial
+    sudo apt-get install python3-retrying python3-serial python3-apsw
+
+The persistent queue logic is included directly in this repository.
 
 ## Contributions and future plans
 
