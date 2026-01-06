@@ -1,6 +1,7 @@
 import argparse
 import importlib
 import logging
+from logging.handlers import RotatingFileHandler
 import sys
 import threading
 import time
@@ -183,18 +184,26 @@ def ReadLoop(args, queue: persistent_queue.Queue):
 
                 try:
                     line = str(line, encoding="UTF-8")
+                except UnicodeDecodeError:
+                    logging.warning("Skipping line with invalid UTF-8: %r", line)
+                    continue
                 except TypeError:
                     pass
+                
                 # Parse 'line', either with or without timestamp.
-                words = line.strip().split(" ")
-                if len(words) == 2:
-                    (tags, values) = words
-                    timestamp = int(time.time() * 1000000000)
-                elif len(words) == 3:
-                    (tags, values, timestamp) = words
-                    float(timestamp)
-                else:
-                    raise ValueError("Unable to parse line {0!r}".format(line))
+                try:
+                    words = line.strip().split(" ")
+                    if len(words) == 2:
+                        (tags, values) = words
+                        timestamp = int(time.time() * 1000000000)
+                    elif len(words) == 3:
+                        (tags, values, timestamp) = words
+                        float(timestamp)
+                    else:
+                        raise ValueError("Unable to parse line {0!r}".format(line))
+                except Exception as e:
+                     logging.warning(f"Error parsing line structure: {e}")
+                     continue
 
                 # Filter out values that are 'nan' as InfluxDB does not support them.
                 value_parts = values.split(',')
@@ -209,13 +218,11 @@ def ReadLoop(args, queue: persistent_queue.Queue):
                     valid_values.append(part)
 
                 if removed_fields:
-                    timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     try:
                         line_str = line.strip()
                     except:
                         line_str = str(line)
-                    with open("error.log", "a") as err_file:
-                        err_file.write(f"[{timestamp_str}] Removed nan values for fields {removed_fields} from line: {line_str}\n")
+                    logging.getLogger('data_errors').warning(f"Removed nan values for fields {removed_fields} from line: {line_str}")
 
                 if not valid_values:
                     logging.warning("Skipping line because all values are nan: %r", line)
@@ -252,6 +259,7 @@ def WriteLoop(args, queue: persistent_queue.Queue):
 
     try:
         influxdb_line: str
+        count = 0
         for influxdb_line in queue.get_blocking(tick=60):
             # Send to InfluxDB
             influxdb.PostLines(args.database,
@@ -273,6 +281,13 @@ def WriteLoop(args, queue: persistent_queue.Queue):
                             mqtt_client.publish(full_topic, json.dumps(payload))
                 except Exception as e:
                     logging.warning(f"Failed to publish to MQTT: {e}")
+
+            count += 1
+            if count % 1000 == 0:
+                try:
+                    queue.garbage_collect()
+                except Exception as e:
+                    logging.warning(f"Garbage collection failed: {e}")
 
     except:
         logging.exception("Error, retrying with backoff")
@@ -404,6 +419,17 @@ def main():
 
     if args.debug:
         logging.basicConfig(level=logging.DEBUG)
+
+    # Setup dedicated logger for data errors (nan values) to keep them separate but safe
+    data_error_logger = logging.getLogger('data_errors')
+    data_error_logger.setLevel(logging.WARNING)
+    # Rotate log after 5MB, keep 1 backup file
+    handler = RotatingFileHandler('error.log', maxBytes=5*1024*1024, backupCount=1)
+    formatter = logging.Formatter('%(asctime)s - %(message)s')
+    handler.setFormatter(formatter)
+    data_error_logger.addHandler(handler)
+    # Prevent these from propagating to the root logger (and console/main log) if desired
+    data_error_logger.propagate = False
 
     # Create a scheduler and schedule the script to restart in 24 hours
     scheduler = sched.scheduler(time.time, time.sleep)
