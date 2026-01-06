@@ -2,8 +2,6 @@
 
 _Disclaimer: This is not an official Google product._
 
-[![Build Status](https://travis-ci.com/ppetr/arduino-influxdb.svg?branch=master)](https://travis-ci.com/ppetr/arduino-influxdb)
-
 ## Purpose
 
 This script reads data from a serial device, typically Arduino, in InfluxDB's
