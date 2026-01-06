@@ -125,3 +125,4 @@ dmypy.json
 # Vim
 *.sw[op]
 config.json
+GEMINI_CONTEXT.md
