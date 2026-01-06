@@ -88,14 +88,26 @@ def parse_influx_line_to_dict(line_str: str) -> Dict[str, Any]:
 
 def group_mqtt_data(flat_data: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     """Groups flat data into sub-topics with renamed fields."""
+    
+    # Define expected fields for each group to ensure 'null' is sent for missing/filtered data
+    # This prevents stale data in Home Assistant
+    expected_prefixes = {
+        "outside": "outside",
+        "incoming": "incoming",
+        "inside": "inside",
+        "outgoing": "outgoing"
+    }
+    expected_suffixes = ["temp", "hum", "ah", "dew"]
+    
     groups = {
-        "outside": {},
-        "incoming": {},
-        "inside": {},
-        "outgoing": {},
-        "stats": {},
+        "stats": {k: None for k in ["h-eff", "t-eff", "hum-gain"]},
         "system": {}
     }
+    
+    # Initialize sensor groups with None values
+    for group_key, prefix in expected_prefixes.items():
+        groups[group_key] = {f"{prefix}_{s}": None for s in expected_suffixes}
+
     
     # Use timezone-aware timestamp for Home Assistant compatibility
     timestamp_iso = datetime.datetime.now().astimezone().isoformat()
@@ -219,7 +231,7 @@ def ReadLoop(args, queue: persistent_queue.Queue):
                             continue
                         
                         # Remove zero humidity values (sensor error)
-                        if key.startswith('rh'):
+                        if key.startswith('rh') or key.startswith('ah'):
                             try:
                                 if float(val) == 0:
                                     removed_fields.append(key)
