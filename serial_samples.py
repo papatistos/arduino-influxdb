@@ -95,7 +95,3 @@ def SerialLines(handle: BinaryIO, max_line_length: int, timeout: float) -> Gener
         if not line.endswith(b"\n"):
             raise LineOverflowError(line, max_line_length)
         yield line.rstrip()
-
-
-
-

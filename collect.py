@@ -43,7 +43,6 @@ def RetryOnIOError(exception):
     """Returns True if 'exception' is an IOError."""
     return isinstance(exception, IOError)
 
-
 @retry(wait_exponential_multiplier=1000,
        wait_exponential_max=60000,
        retry_on_exception=RetryOnIOError)
@@ -54,6 +53,9 @@ def ReadLoop(args, queue: persistent_queue.Queue):
     if args.serial_function:
         module, fn_name = args.serial_function.rsplit(".", 1)
         serial_fn = getattr(importlib.import_module(module), fn_name)
+
+    invalid_line_count = 0
+    max_invalid_lines = 10  # Adjust this threshold as needed
     try:
         logging.debug("Read loop started")
         with serial.serial_for_url(args.device,
@@ -64,10 +66,18 @@ def ReadLoop(args, queue: persistent_queue.Queue):
             else:
                 lines = serial_samples.SerialLines(handle, args.max_line_length, 10.0)
             start_time = time.time()
+
             for line in lines:
                 # If line does not start with start string
                 if not line.startswith(b'FTX'):
-                   continue
+                    invalid_line_count += 1
+                    if invalid_line_count >= max_invalid_lines:
+                        logging.error(f"Received {max_invalid_lines} consecutive invalid lines. Exiting ReadLoop.")
+                        break  # Exit the loop, but not the function
+                    continue
+
+                invalid_line_count = 0  # Reset the count on a valid line
+
                 try:
                     line = str(line, encoding="UTF-8")
                 except TypeError:
@@ -82,12 +92,33 @@ def ReadLoop(args, queue: persistent_queue.Queue):
                     float(timestamp)
                 else:
                     raise ValueError("Unable to parse line {0!r}".format(line))
+
+                # Filter out values that are 'nan' as InfluxDB does not support them.
+                value_parts = values.split(',')
+                valid_values = []
+                for part in value_parts:
+                    if '=' in part:
+                        _, val = part.split('=', 1)
+                        if val.lower() == 'nan':
+                            continue
+                    valid_values.append(part)
+
+                if not valid_values:
+                    logging.warning("Skipping line because all values are nan: %r", line)
+                    continue
+                values = ",".join(valid_values)
+
                 tags: str = ",".join(t for t in (tags, args.tags) if t)
                 queue.put("{0} {1} {2:d}".format(tags, values, timestamp))
+
+        if invalid_line_count >= max_invalid_lines:
+            return  # Exit the function after the loop
     except:
         logging.exception("Error, retrying with backoff")
         raise
-        
+
+
+
 
 @retry(wait_exponential_multiplier=1000,
        wait_exponential_max=60000,
@@ -107,6 +138,7 @@ def WriteLoop(args, queue: persistent_queue.Queue):
     except:
         logging.exception("Error, retrying with backoff")
         raise
+
 
 
 def RunAndDie(fun, *args):
@@ -244,4 +276,5 @@ if __name__ == "__main__":
             main()
         except Exception:
             logging.exception("Unhandled exception occurred in main(), restarting script...")
-            time.sleep(5)  # Wait a bit before restarting
+            time.sleep(5)  # Wait a bit
+
