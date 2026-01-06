@@ -56,12 +56,25 @@ passed to it by `collect.py` (or any other script).
   - [retrying](https://pypi.python.org/pypi/retrying)
   - [pyserial](https://pypi.python.org/pypi/pyserial)
   - [apsw](https://rogerbinns.github.io/apsw/) (for the persistent queue)
+  - [paho-mqtt](https://pypi.org/project/paho-mqtt/) (optional, for MQTT support)
 
 On Debian these can be installed using
 
-    sudo apt-get install python3-retrying python3-serial python3-apsw
+    sudo apt-get install python3-retrying python3-serial python3-apsw python3-paho-mqtt
 
 The persistent queue logic is included directly in this repository.
+
+## MQTT Support
+
+The script can optionally publish data to an MQTT broker. This is useful for integrating with
+home automation systems like Home Assistant.
+
+To enable MQTT, use the following arguments:
+- `--mqtt-host`: Hostname or IP of the MQTT broker.
+- `--mqtt-port`: Port (default 1883).
+- `--mqtt-topic`: Base topic (default `arduino/data`).
+
+Data is automatically grouped into sub-topics based on sensor suffixes (e.g., `.../outside`, `.../inside`).
 
 ## Contributions and future plans
 

@@ -388,9 +388,8 @@ def main():
                         'file will be automatically created and managed '
                         'by the program; it ensures that no datapoints '
                         'are ever lost, even if the database is '
-                        'temporarily unreachable; NOTE that at the '
-                        'moment old lines are not garbage collected '
-                        'from the file, so it grows forever!')
+                        'temporarily unreachable; acknowledged messages '
+                        'are automatically garbage collected.')
     parser.add_argument('-w',
                         '--wal_autocheckpoint',
                         type=int,
