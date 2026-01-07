@@ -234,10 +234,17 @@ def ReadLoop(args, queue: persistent_queue.Queue):
                             removed_fields.append(key)
                             continue
                         
-                        # Remove zero humidity values (sensor error)
-                        if key.startswith('rh') or key.startswith('ah'):
+                        # Remove invalid humidity values (sensor error or extreme drift)
+                        if key.startswith('rh'):
                             try:
-                                if float(val) == 0:
+                                if float(val) < 3.0:
+                                    removed_fields.append(key)
+                                    continue
+                            except ValueError:
+                                pass
+                        elif key.startswith('ah'):
+                            try:
+                                if float(val) < 0.1:
                                     removed_fields.append(key)
                                     continue
                             except ValueError:
