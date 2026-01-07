@@ -126,3 +126,5 @@ dmypy.json
 *.sw[op]
 config.json
 GEMINI_CONTEXT.md
+
+.DS_Store
