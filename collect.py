@@ -252,6 +252,17 @@ def ReadLoop(args, queue: persistent_queue.Queue):
 
                     valid_values.append(part)
 
+                # Check dependencies: if rh1 (incoming) or rh2 (inside) are invalid, h-eff is invalid.
+                if 'rh1' in removed_fields or 'rh2' in removed_fields:
+                    # Re-filter valid_values to exclude h-eff
+                    new_valid_values = []
+                    for part in valid_values:
+                        if part.startswith("h-eff="):
+                            removed_fields.append("h-eff")
+                        else:
+                            new_valid_values.append(part)
+                    valid_values = new_valid_values
+
                 if removed_fields:
                     try:
                         line_str = line.strip()
